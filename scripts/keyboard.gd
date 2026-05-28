@@ -18,15 +18,11 @@ const SR_W : float = 0.0045  # 白鍵球の半径 4.5mm
 const SR_B : float = 0.0035  # 黒鍵球の半径 3.5mm
 
 # ── アニメーション定数 ───────────────────────────────────────────────────
-const BREATHE_SPEED : float = 1.3    # 呼吸の速さ (rad/s)
-const SPARKLE_PROB  : float = 0.003  # スパークル発生確率 / frame / key
-const SPARKLE_DUR   : float = 0.35   # スパークル持続時間 (s)
 const ACTIVE_SPEED  : float = 14.0   # 演奏中パルス速度 (rad/s)
 
 var _keys    : Dictionary = {}   # note -> MeshInstance3D
 var _mats    : Dictionary = {}   # note -> StandardMaterial3D
 var _active  : Dictionary = {}   # note -> bool
-var _sparkle : Dictionary = {}   # note -> float (スパークル残り時間 s)
 var _time    : float = 0.0
 
 
@@ -81,17 +77,15 @@ func _build_spheres() -> void:
 		_keys[note]    = mi
 		_mats[note]    = mat
 		_active[note]  = false
-		_sparkle[note] = 0.0
 
 	# 全体を中央揃え (main.gd の HALF_W 計算と一致)
 	position.x -= N_WHITE * WHITE_W * 0.5
 
 
 # ── アニメーション ────────────────────────────────────────────────────────
-# 3 状態:
-#   1. 演奏中   : 緑の高速パルス
-#   2. スパークル: ランダムな閃光 (白鍵=金色, 黒鍵=青白)
-#   3. 待機中   : 位相オフセット付きの呼吸 (左から右へ波のように流れる)
+# 2 状態:
+#   1. 演奏中 : 緑の高速パルス
+#   2. 待機中 : 固定の薄い発光
 func _process(delta: float) -> void:
 	_time += delta
 
@@ -107,33 +101,15 @@ func _process(delta: float) -> void:
 			mat.emission_energy_multiplier = 4.0 + p * 7.0
 
 		else:
-			# スパークルを確率トリガー
-			if _sparkle[note] <= 0.0 and randf() < SPARKLE_PROB:
-				_sparkle[note] = SPARKLE_DUR * (0.8 + randf() * 0.4)
-
-			if _sparkle[note] > 0.0:
-				_sparkle[note] -= delta
-				# 山なり (sin カーブ) の閃光
-				var t      : float = clamp(1.0 - _sparkle[note] / SPARKLE_DUR, 0.0, 1.0)
-				var bright : float = sin(t * PI) * 5.5
-				if is_b:
-					mat.albedo_color = Color(0.65, 0.65, 1.00)
-					mat.emission     = Color(0.50, 0.50, 1.00)
-				else:
-					mat.albedo_color = Color(1.00, 0.95, 0.70)
-					mat.emission     = Color(1.00, 0.88, 0.45)
-				mat.emission_energy_multiplier = 1.5 + bright
+			# ── 待機中: 固定の薄い発光 ──────────────────────────────────
+			if is_b:
+				mat.albedo_color               = Color(0.35, 0.35, 1.00)
+				mat.emission                   = Color(0.25, 0.25, 0.85)
+				mat.emission_energy_multiplier = 0.5
 			else:
-				# ── 待機中: 一様な呼吸 ──────────────────────────────────
-				var breath : float = 0.5 + 0.5 * sin(_time * BREATHE_SPEED)
-				if is_b:
-					mat.albedo_color               = Color(0.35, 0.35, 1.00)
-					mat.emission                   = Color(0.25, 0.25, 0.85)
-					mat.emission_energy_multiplier = 0.25 + breath * 0.65
-				else:
-					mat.albedo_color               = Color(0.80, 0.75, 1.00)
-					mat.emission                   = Color(0.60, 0.55, 1.00)
-					mat.emission_energy_multiplier = 0.35 + breath * 0.75
+				mat.albedo_color               = Color(0.80, 0.75, 1.00)
+				mat.emission                   = Color(0.60, 0.55, 1.00)
+				mat.emission_energy_multiplier = 0.6
 
 
 # ── MIDI ─────────────────────────────────────────────────────────────────
