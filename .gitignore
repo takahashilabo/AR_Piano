@@ -1,0 +1,16 @@
+# Godot editor cache
+.godot/
+
+# Web export artifacts (regenerate with `make export`)
+export/web/index.wasm
+export/web/index.pck
+export/web/index.js
+export/web/index.audio.*.js
+export/web/*.import
+
+# SSL certs (generate locally with mkcert)
+server/cert.pem
+server/key.pem
+
+# macOS
+.DS_Store

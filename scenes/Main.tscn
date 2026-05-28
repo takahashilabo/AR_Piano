@@ -1,0 +1,73 @@
+[gd_scene load_steps=3 format=3]
+
+[ext_resource type="Script" path="res://scripts/main.gd" id="Script_1"]
+[ext_resource type="Script" path="res://scripts/keyboard.gd" id="Script_2"]
+
+[node name="Main" type="Node3D"]
+script = ExtResource("Script_1")
+
+[node name="XROrigin3D" type="XROrigin3D" parent="."]
+
+[node name="XRCamera3D" type="XRCamera3D" parent="XROrigin3D"]
+
+[node name="ARLabel" type="Label3D" parent="XROrigin3D"]
+font_size = 52
+pixel_size = 0.001
+outline_size = 8
+outline_modulate = Color(0, 0, 0, 1)
+modulate = Color(1, 1, 0.3, 1)
+horizontal_alignment = 0
+billboard = 1
+visible = false
+
+[node name="LeftController" type="XRController3D" parent="XROrigin3D"]
+tracker = &"left_hand"
+
+[node name="RightController" type="XRController3D" parent="XROrigin3D"]
+tracker = &"right_hand"
+
+[node name="DirectionalLight3D" type="DirectionalLight3D" parent="."]
+transform = Transform3D(0.707107, -0.420735, 0.572061, 0, 0.806032, 0.592138, -0.707107, -0.420735, 0.572061, 0, 3, 0)
+
+[node name="Keyboard" type="Node3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.75, -0.3)
+script = ExtResource("Script_2")
+
+[node name="CanvasLayer" type="CanvasLayer" parent="."]
+
+[node name="Button" type="Button" parent="CanvasLayer"]
+anchor_left = 0.5
+anchor_top = 0.5
+anchor_right = 0.5
+anchor_bottom = 0.5
+offset_left = -150.0
+offset_top = -60.0
+offset_right = 150.0
+offset_bottom = -10.0
+text = "Start AR"
+theme_override_font_sizes/font_size = 24
+
+[node name="MidiResetButton" type="Button" parent="CanvasLayer"]
+anchor_left = 0.5
+anchor_top = 0.5
+anchor_right = 0.5
+anchor_bottom = 0.5
+offset_left = -150.0
+offset_top = 10.0
+offset_right = 150.0
+offset_bottom = 60.0
+text = "MIDI Reset"
+theme_override_font_sizes/font_size = 24
+
+[node name="MidiLabel" type="Label" parent="CanvasLayer"]
+anchor_left = 0.5
+anchor_top = 0.0
+anchor_right = 0.5
+anchor_bottom = 0.0
+offset_left = -200.0
+offset_top = 20.0
+offset_right = 200.0
+offset_bottom = 60.0
+text = "MIDI: waiting..."
+theme_override_font_sizes/font_size = 20
+horizontal_alignment = 1
