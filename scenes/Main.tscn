@@ -16,7 +16,7 @@ pixel_size = 0.001
 outline_size = 8
 outline_modulate = Color(0, 0, 0, 1)
 modulate = Color(1, 1, 0.3, 1)
-horizontal_alignment = 0
+horizontal_alignment = 1
 billboard = 1
 visible = false
 

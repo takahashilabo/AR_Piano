@@ -87,7 +87,7 @@ func _process(delta: float) -> void:
 			_refresh_label()
 	var fwd : Vector3 = -cam.global_transform.basis.z.normalized()
 	($XROrigin3D/ARLabel as Label3D).global_position = \
-		cam.global_position + fwd * 0.8 + Vector3(-0.2, -0.1, 0)
+		cam.global_position + fwd * 0.8 + Vector3(0.0, -0.1, 0.0)
 
 	var kb  := $Keyboard as Node3D
 	var rc  := $XROrigin3D/RightController as XRController3D
