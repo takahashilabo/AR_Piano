@@ -31,6 +31,20 @@ var _score_trigger_was_held : bool  = false
 var _score_trigger_prev_pos : Vector3 = Vector3.ZERO
 var _score_was_moving       : bool  = false
 
+# ── 演奏ガイド (ラベル非表示時): 楽譜をポインティングして小節を選択し、
+#    対応する鍵盤を演奏順に１つずつ繰り返し光らせる ─────────────────────────
+# ラベル非表示 = キャリブレーション完了とみなし、トリガー等を選択操作に転用する
+# (キャリブレーション操作とは _label_visible で排他にしているため衝突しない)
+const POINT_TRIGGER_THRESH : float = 0.5    # 「選択確定」とみなすトリガー押し込み量
+
+var _point_trig_prev_r : bool = false       # 前フレームで右トリガーが閾値超えだったか
+var _point_trig_prev_l : bool = false       # 前フレームで左トリガーが閾値超えだったか
+
+var _glow_seq          : Array = []         # [{note:int(MIDI, -1=休符), dur_sec:float}, ...]
+var _glow_index        : int   = -1
+var _glow_timer        : float = 0.0
+var _glow_active_note  : int   = -1
+
 # ── ARラベル (黄色いキャリブレーション表示) のオン/オフ切替 ──
 # 右コン A+B 同時長押し、または 左コン X+Y 同時長押しで切り替える
 # (どちらも単独では既存の回転操作に使われているが、同時押しは未使用のため衝突しない)
@@ -123,14 +137,23 @@ func _process(delta: float) -> void:
 	($XROrigin3D/ARLabel as Label3D).global_position = \
 		cam.global_position + fwd * 0.8 + Vector3(0.0, -0.1, 0.0)
 
-	var kb  := $Keyboard as Node3D
-	var rc  := $XROrigin3D/RightController as XRController3D
+	var kb    := $Keyboard as Node3D
+	var rc    := $XROrigin3D/RightController as XRController3D
+	var score := $Score as Node3D
+	var lc    := $XROrigin3D/LeftController as XRController3D
+
 	# keyboard.gd は position.x -= half_width で左端を原点にしているため、
 	# 中央 = global_position + basis.x * half_w
 	var half_w : float = ORIG_WIDTH * 0.5 * kb.scale.x
 	var moved := false
+	var score_moved := false
 
-	# ── A/B ボタン状態をポーリング ──
+	const STICK_DEAD  : float = 0.15
+	const SCALE_SPEED : float = 0.4   # 倍率/秒
+	const SCALE_MIN   : float = 0.3
+	const SCALE_MAX   : float = 3.0
+
+	# ── ボタン保持時間をポーリング (キャリブレーション操作 & ラベル切替判定の両方で使用) ──
 	if rc.get_float("ax_button") > 0.5:
 		_a_held += delta
 	else:
@@ -139,52 +162,6 @@ func _process(delta: float) -> void:
 		_b_held += delta
 	else:
 		_b_held = 0.0
-
-	# ── トリガー: コントローラの移動量だけ鍵盤を平行移動 ──
-	if _right_trigger > 0.3:
-		if _trigger_was_held:
-			kb.global_position += rc.global_position - _trigger_prev_pos
-		_trigger_prev_pos = rc.global_position
-		_trigger_was_held = true
-		moved = true
-	else:
-		_trigger_was_held = false
-
-	# ── A/B: 鍵盤の中央を固定して水平回転（長押しで加速）──
-	if _a_held > 0.0 or _b_held > 0.0:
-		# 回転前の中心ワールド座標を保存
-		var center : Vector3 = kb.global_position + kb.transform.basis.x * half_w
-		if _a_held > 0.0:
-			kb.rotation.y += _rot_speed(_a_held) * delta
-		if _b_held > 0.0:
-			kb.rotation.y -= _rot_speed(_b_held) * delta
-		# 回転後、中心が同じ位置に来るよう左端を再計算
-		kb.global_position = center - kb.transform.basis.x * half_w
-		moved = true
-
-	# ── スティック Y: スケール調整（中央固定）──
-	const STICK_DEAD : float = 0.15
-	const SCALE_SPEED : float = 0.4   # 倍率/秒
-	const SCALE_MIN   : float = 0.3
-	const SCALE_MAX   : float = 3.0
-	if abs(_right_stick.y) > STICK_DEAD:
-		var center : Vector3 = kb.global_position + kb.transform.basis.x * half_w
-		var new_scale : float = clamp(
-			kb.scale.x * (1.0 + _right_stick.y * SCALE_SPEED * delta),
-			SCALE_MIN, SCALE_MAX
-		)
-		kb.scale = Vector3.ONE * new_scale
-		# スケール変更後は half_w が変わるので再計算
-		var new_half_w : float = ORIG_WIDTH * 0.5 * new_scale
-		kb.global_position = center - kb.transform.basis.x * new_half_w
-		moved = true
-
-	# ── 楽譜キャリブレーション (左コントローラー) ──
-	# Score の原点 = 視覚的な中心なので、鍵盤のような half_width 補正は不要
-	var score := $Score as Node3D
-	var lc     := $XROrigin3D/LeftController as XRController3D
-	var score_moved := false
-
 	if lc.get_float("ax_button") > 0.5:
 		_score_x_held += delta
 	else:
@@ -195,6 +172,7 @@ func _process(delta: float) -> void:
 		_score_y_held = 0.0
 
 	# ── ラベル表示切替: 右コン A+B、または左コン X+Y を同時に1秒長押し ──
+	# 表示 ON = キャリブレーションモード / 表示 OFF = 演奏ガイド (ポインティング選択) モード
 	if (_a_held > 0.0 and _b_held > 0.0) or (_score_x_held > 0.0 and _score_y_held > 0.0):
 		_label_toggle_held += delta
 		if _label_toggle_held > LABEL_TOGGLE_SEC:
@@ -202,56 +180,183 @@ func _process(delta: float) -> void:
 			($XROrigin3D/ARLabel as Label3D).visible = _label_visible
 			if _label_visible:
 				_refresh_label(">> 表示ON")
+				# キャリブレーションモードに戻る → ホバー枠を消し、移動状態をリセット
+				score.set_hover_measure(-1)
+				_trigger_was_held       = false
+				_score_trigger_was_held = false
+			else:
+				# 演奏ガイドモードに入る → 既に押し込まれているトリガーで誤確定しないようにする
+				_point_trig_prev_r = _right_trigger > POINT_TRIGGER_THRESH
+				_point_trig_prev_l = _left_trigger  > POINT_TRIGGER_THRESH
 			_label_toggle_held = -999.0  # ボタンを離すまで再発火させない
 	else:
 		_label_toggle_held = 0.0
 
-	# ── トリガー: コントローラの移動量だけ楽譜を平行移動 ──
-	if _left_trigger > 0.3:
-		if _score_trigger_was_held:
-			score.global_position += lc.global_position - _score_trigger_prev_pos
-		_score_trigger_prev_pos = lc.global_position
-		_score_trigger_was_held = true
-		score_moved = true
+	if _label_visible:
+		# ════════════════════════════════════════════════════════════════
+		# キャリブレーションモード (右コン=鍵盤 / 左コン=楽譜)
+		# ════════════════════════════════════════════════════════════════
+
+		# ── トリガー: コントローラの移動量だけ鍵盤を平行移動 ──
+		if _right_trigger > 0.3:
+			if _trigger_was_held:
+				kb.global_position += rc.global_position - _trigger_prev_pos
+			_trigger_prev_pos = rc.global_position
+			_trigger_was_held = true
+			moved = true
+		else:
+			_trigger_was_held = false
+
+		# ── A/B: 鍵盤の中央を固定して水平回転（長押しで加速）──
+		if _a_held > 0.0 or _b_held > 0.0:
+			# 回転前の中心ワールド座標を保存
+			var center : Vector3 = kb.global_position + kb.transform.basis.x * half_w
+			if _a_held > 0.0:
+				kb.rotation.y += _rot_speed(_a_held) * delta
+			if _b_held > 0.0:
+				kb.rotation.y -= _rot_speed(_b_held) * delta
+			# 回転後、中心が同じ位置に来るよう左端を再計算
+			kb.global_position = center - kb.transform.basis.x * half_w
+			moved = true
+
+		# ── スティック Y: スケール調整（中央固定）──
+		if abs(_right_stick.y) > STICK_DEAD:
+			var center : Vector3 = kb.global_position + kb.transform.basis.x * half_w
+			var new_scale : float = clamp(
+				kb.scale.x * (1.0 + _right_stick.y * SCALE_SPEED * delta),
+				SCALE_MIN, SCALE_MAX
+			)
+			kb.scale = Vector3.ONE * new_scale
+			# スケール変更後は half_w が変わるので再計算
+			var new_half_w : float = ORIG_WIDTH * 0.5 * new_scale
+			kb.global_position = center - kb.transform.basis.x * new_half_w
+			moved = true
+
+		# ── トリガー: コントローラの移動量だけ楽譜を平行移動 ──
+		if _left_trigger > 0.3:
+			if _score_trigger_was_held:
+				score.global_position += lc.global_position - _score_trigger_prev_pos
+			_score_trigger_prev_pos = lc.global_position
+			_score_trigger_was_held = true
+			score_moved = true
+		else:
+			_score_trigger_was_held = false
+
+		# ── X/Y: 中心 (= 原点) を固定して水平回転（長押しで加速）──
+		if _score_x_held > 0.0 or _score_y_held > 0.0:
+			if _score_x_held > 0.0:
+				score.rotation.y += _rot_speed(_score_x_held) * delta
+			if _score_y_held > 0.0:
+				score.rotation.y -= _rot_speed(_score_y_held) * delta
+			score_moved = true
+
+		# ── スティック Y: スケール調整（中心固定、原点基準なので追加補正不要）──
+		if abs(_left_stick.y) > STICK_DEAD:
+			var new_score_scale : float = clamp(
+				score.scale.x * (1.0 + _left_stick.y * SCALE_SPEED * delta),
+				SCALE_MIN, SCALE_MAX
+			)
+			score.scale = Vector3.ONE * new_score_scale
+			score_moved = true
+
+		# ── 楽譜の操作終了時に自動保存（リストア完了後のみ）──
+		if _restore_pos_frame == 0 and _score_was_moving and not score_moved:
+			score.save_position()
+			_refresh_label(">> Score Saved")
+		_score_was_moving = score_moved
+
+		# ── 操作終了時に自動保存（リストア完了後のみ）──
+		if _restore_pos_frame == 0 and _was_moving and not moved:
+			($Keyboard as Node3D).save_position()
+			_refresh_label(">> Saved")
+		elif moved:
+			_refresh_label()
+		_was_moving = moved
+
 	else:
-		_score_trigger_was_held = false
+		# ════════════════════════════════════════════════════════════════
+		# 演奏ガイドモード: 楽譜をポインティングして小節を選択し、
+		# 対応する鍵盤を演奏順に１つずつ繰り返し光らせる
+		# ════════════════════════════════════════════════════════════════
+		_update_measure_pointing(rc, lc, score)
 
-	# ── X/Y: 中心 (= 原点) を固定して水平回転（長押しで加速）──
-	if _score_x_held > 0.0 or _score_y_held > 0.0:
-		if _score_x_held > 0.0:
-			score.rotation.y += _rot_speed(_score_x_held) * delta
-		if _score_y_held > 0.0:
-			score.rotation.y -= _rot_speed(_score_y_held) * delta
-		score_moved = true
-
-	# ── スティック Y: スケール調整（中心固定、原点基準なので追加補正不要）──
-	if abs(_left_stick.y) > STICK_DEAD:
-		var new_score_scale : float = clamp(
-			score.scale.x * (1.0 + _left_stick.y * SCALE_SPEED * delta),
-			SCALE_MIN, SCALE_MAX
-		)
-		score.scale = Vector3.ONE * new_score_scale
-		score_moved = true
-
-	# ── 楽譜の操作終了時に自動保存（リストア完了後のみ）──
-	if _restore_pos_frame == 0 and _score_was_moving and not score_moved:
-		score.save_position()
-		_refresh_label(">> Score Saved")
-	_score_was_moving = score_moved
-
-	# ── 操作終了時に自動保存（リストア完了後のみ）──
-	if _restore_pos_frame == 0 and _was_moving and not moved:
-		($Keyboard as Node3D).save_position()
-		_refresh_label(">> Saved")
-	elif moved:
-		_refresh_label()
-	_was_moving = moved
+	# ── 選択小節の演奏ガイド・グロー (モードに関わらず継続して再生) ──
+	_update_measure_glow(delta)
 
 
 # 長押し時間 → 回転速度 (rad/s)
 func _rot_speed(held: float) -> float:
 	var t : float = clamp(held / ROT_ACCEL_SEC, 0.0, 1.0)
 	return lerp(ROT_INIT, ROT_MAX, t)
+
+
+# ── 演奏ガイド: 楽譜のポインティング選択 ──────────────────────────────────
+# 両コントローラーから前方へレイを伸ばし、楽譜 (score_display.gd) 側の
+# ジオメトリ判定 (measure_index_from_ray) で「指している小節」を求める。
+# 右コンが楽譜を指していなければ左コンも試す (利き手を問わない)。
+# トリガーを「押した瞬間」(立ち上がりエッジ) を選択確定の合図として使う。
+func _update_measure_pointing(rc: XRController3D, lc: XRController3D, score: Node3D) -> void:
+	var hover_idx := -1
+
+	var r_dir : Vector3 = -rc.global_transform.basis.z
+	hover_idx = score.measure_index_from_ray(rc.global_position, r_dir)
+	if hover_idx < 0:
+		var l_dir : Vector3 = -lc.global_transform.basis.z
+		hover_idx = score.measure_index_from_ray(lc.global_position, l_dir)
+
+	score.set_hover_measure(hover_idx)
+
+	var r_pressed : bool = _right_trigger > POINT_TRIGGER_THRESH
+	var l_pressed : bool = _left_trigger  > POINT_TRIGGER_THRESH
+	var confirm   : bool = (r_pressed and not _point_trig_prev_r) \
+			or (l_pressed and not _point_trig_prev_l)
+	_point_trig_prev_r = r_pressed
+	_point_trig_prev_l = l_pressed
+
+	if confirm and hover_idx >= 0:
+		if score.set_selected_measure(hover_idx):
+			_start_measure_glow(score, hover_idx)
+
+
+# 選択された小節の演奏ガイド・シーケンスを (再)構築して再生開始する
+func _start_measure_glow(score: Node3D, mi_idx: int) -> void:
+	_stop_measure_glow()
+	_glow_seq   = score.get_measure_playback(mi_idx)
+	_glow_index = -1
+	_glow_timer = 0.0
+
+
+# 演奏ガイドを停止し、点灯中の鍵盤があれば消灯する
+func _stop_measure_glow() -> void:
+	if _glow_active_note >= 0:
+		($Keyboard as Node3D).note_off(_glow_active_note)
+	_glow_seq         = []
+	_glow_index       = -1
+	_glow_timer       = 0.0
+	_glow_active_note = -1
+
+
+# 選択中の小節の音符を演奏順に１つずつ光らせ、最後まで来たら最初に戻る (無限ループ)
+func _update_measure_glow(delta: float) -> void:
+	if _glow_seq.is_empty():
+		return
+
+	_glow_timer -= delta
+	if _glow_timer > 0.0:
+		return
+
+	var kb := $Keyboard as Node3D
+	if _glow_active_note >= 0:
+		kb.note_off(_glow_active_note)
+		_glow_active_note = -1
+
+	var n := _glow_seq.size()
+	_glow_index = (_glow_index + 1) % n
+	var entry : Dictionary = _glow_seq[_glow_index]
+	_glow_timer = max(float(entry["dur_sec"]), 0.05)
+	if int(entry["note"]) >= 0:
+		_glow_active_note = int(entry["note"])
+		kb.note_on(_glow_active_note)
 
 
 # ── 楽譜の配置 (鍵盤を基準にした相対位置) ─────────────────────────────────
@@ -318,6 +423,12 @@ func _on_session_started() -> void:
 	_score_trigger_was_held = false
 	_label_toggle_held = 0.0
 	_restore_pos_frame = 2   # 2フレーム後にカメラ相対で保存位置を復元
+	# 演奏ガイド (ポインティング選択 / グロー) の状態もリセット
+	_point_trig_prev_r = false
+	_point_trig_prev_l = false
+	_stop_measure_glow()
+	($Score as Node3D).set_hover_measure(-1)
+	($Score as Node3D).set_selected_measure(-1)
 	_refresh_label()
 
 func _on_session_ended() -> void:
@@ -325,6 +436,7 @@ func _on_session_ended() -> void:
 	get_viewport().transparent_bg = false
 	get_viewport().use_xr = false
 	($XROrigin3D/ARLabel as Label3D).visible = false
+	_stop_measure_glow()
 
 func _on_session_failed(_session_mode: String, message: String) -> void:
 	get_viewport().use_xr = false
