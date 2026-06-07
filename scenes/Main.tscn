@@ -1,7 +1,8 @@
-[gd_scene load_steps=3 format=3]
+[gd_scene load_steps=4 format=3]
 
 [ext_resource type="Script" path="res://scripts/main.gd" id="Script_1"]
 [ext_resource type="Script" path="res://scripts/keyboard.gd" id="Script_2"]
+[ext_resource type="Script" path="res://scripts/score_display.gd" id="Script_3"]
 
 [node name="Main" type="Node3D"]
 script = ExtResource("Script_1")
@@ -32,6 +33,10 @@ transform = Transform3D(0.707107, -0.420735, 0.572061, 0, 0.806032, 0.592138, -0
 [node name="Keyboard" type="Node3D" parent="."]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.75, -0.3)
 script = ExtResource("Script_2")
+
+[node name="Score" type="Node3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1.05, -0.55)
+script = ExtResource("Script_3")
 
 [node name="CanvasLayer" type="CanvasLayer" parent="."]
 

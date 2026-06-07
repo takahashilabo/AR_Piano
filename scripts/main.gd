@@ -19,6 +19,25 @@ var _trigger_was_held  : bool  = false # 前フレームにトリガーが押さ
 var _trigger_prev_pos  : Vector3 = Vector3.ZERO  # 前フレームのコントローラ位置
 var _was_moving        : bool  = false # 前フレームに何かしら操作中だったか
 
+# ── 楽譜キャリブレーション (左コントローラー) ──────────────────────────────
+# 鍵盤と同じ操作体系: トリガー=移動 / X(ax)・Y(by)=回転 / スティックY=拡縮
+# Score の原点 = 視覚的な中心のため、鍵盤のような half_width 補正は不要で
+# シンプルに global_position / rotation.y / scale を直接操作できる。
+var _left_trigger          := 0.0
+var _left_stick            := Vector2.ZERO
+var _score_x_held          := 0.0          # X ボタン保持時間 (秒)
+var _score_y_held          := 0.0          # Y ボタン保持時間 (秒)
+var _score_trigger_was_held : bool  = false
+var _score_trigger_prev_pos : Vector3 = Vector3.ZERO
+var _score_was_moving       : bool  = false
+
+# ── ARラベル (黄色いキャリブレーション表示) のオン/オフ切替 ──
+# 右コン A+B 同時長押し、または 左コン X+Y 同時長押しで切り替える
+# (どちらも単独では既存の回転操作に使われているが、同時押しは未使用のため衝突しない)
+const LABEL_TOGGLE_SEC : float = 1.0
+var _label_toggle_held : float = 0.0
+var _label_visible     : bool  = true
+
 
 func _ready() -> void:
 	$CanvasLayer/Button.pressed.connect(_on_button_pressed)
@@ -31,6 +50,10 @@ func _ready() -> void:
 	rc.input_vector2_changed.connect(_on_right_stick)
 	# button_released は使わず _process 内で get_float() ポーリングに統一
 	rc.button_pressed.connect(_on_right_button_pressed)
+
+	var lc := $XROrigin3D/LeftController
+	lc.input_float_changed.connect(_on_left_float)
+	lc.input_vector2_changed.connect(_on_left_stick)
 
 	webxr_interface = XRServer.find_interface("WebXR")
 	if webxr_interface:
@@ -62,6 +85,13 @@ func _on_right_stick(_name: String, value: Vector2) -> void:
 func _on_right_button_pressed(_name: String) -> void:
 	pass  # 保存は操作終了時に自動で行う
 
+func _on_left_float(name: String, value: float) -> void:
+	if name == "trigger":
+		_left_trigger = value
+
+func _on_left_stick(_name: String, value: Vector2) -> void:
+	_left_stick = value
+
 
 # ── メインループ ──────────────────────────────────────────────────────────
 func _process(delta: float) -> void:
@@ -84,6 +114,10 @@ func _process(delta: float) -> void:
 		_restore_pos_frame -= 1
 		if _restore_pos_frame == 0:
 			($Keyboard as Node3D).load_position_absolute()
+			# Score は独自のキャリブレーション保存 (score_v1) があればそれを復元、
+			# なければ鍵盤を基準にした相対位置に初期配置する
+			if not ($Score as Node3D).load_position_absolute():
+				_position_score_relative_to_keyboard()
 			_refresh_label()
 	var fwd : Vector3 = -cam.global_transform.basis.z.normalized()
 	($XROrigin3D/ARLabel as Label3D).global_position = \
@@ -145,6 +179,66 @@ func _process(delta: float) -> void:
 		kb.global_position = center - kb.transform.basis.x * new_half_w
 		moved = true
 
+	# ── 楽譜キャリブレーション (左コントローラー) ──
+	# Score の原点 = 視覚的な中心なので、鍵盤のような half_width 補正は不要
+	var score := $Score as Node3D
+	var lc     := $XROrigin3D/LeftController as XRController3D
+	var score_moved := false
+
+	if lc.get_float("ax_button") > 0.5:
+		_score_x_held += delta
+	else:
+		_score_x_held = 0.0
+	if lc.get_float("by_button") > 0.5:
+		_score_y_held += delta
+	else:
+		_score_y_held = 0.0
+
+	# ── ラベル表示切替: 右コン A+B、または左コン X+Y を同時に1秒長押し ──
+	if (_a_held > 0.0 and _b_held > 0.0) or (_score_x_held > 0.0 and _score_y_held > 0.0):
+		_label_toggle_held += delta
+		if _label_toggle_held > LABEL_TOGGLE_SEC:
+			_label_visible = not _label_visible
+			($XROrigin3D/ARLabel as Label3D).visible = _label_visible
+			if _label_visible:
+				_refresh_label(">> 表示ON")
+			_label_toggle_held = -999.0  # ボタンを離すまで再発火させない
+	else:
+		_label_toggle_held = 0.0
+
+	# ── トリガー: コントローラの移動量だけ楽譜を平行移動 ──
+	if _left_trigger > 0.3:
+		if _score_trigger_was_held:
+			score.global_position += lc.global_position - _score_trigger_prev_pos
+		_score_trigger_prev_pos = lc.global_position
+		_score_trigger_was_held = true
+		score_moved = true
+	else:
+		_score_trigger_was_held = false
+
+	# ── X/Y: 中心 (= 原点) を固定して水平回転（長押しで加速）──
+	if _score_x_held > 0.0 or _score_y_held > 0.0:
+		if _score_x_held > 0.0:
+			score.rotation.y += _rot_speed(_score_x_held) * delta
+		if _score_y_held > 0.0:
+			score.rotation.y -= _rot_speed(_score_y_held) * delta
+		score_moved = true
+
+	# ── スティック Y: スケール調整（中心固定、原点基準なので追加補正不要）──
+	if abs(_left_stick.y) > STICK_DEAD:
+		var new_score_scale : float = clamp(
+			score.scale.x * (1.0 + _left_stick.y * SCALE_SPEED * delta),
+			SCALE_MIN, SCALE_MAX
+		)
+		score.scale = Vector3.ONE * new_score_scale
+		score_moved = true
+
+	# ── 楽譜の操作終了時に自動保存（リストア完了後のみ）──
+	if _restore_pos_frame == 0 and _score_was_moving and not score_moved:
+		score.save_position()
+		_refresh_label(">> Score Saved")
+	_score_was_moving = score_moved
+
 	# ── 操作終了時に自動保存（リストア完了後のみ）──
 	if _restore_pos_frame == 0 and _was_moving and not moved:
 		($Keyboard as Node3D).save_position()
@@ -160,15 +254,40 @@ func _rot_speed(held: float) -> float:
 	return lerp(ROT_INIT, ROT_MAX, t)
 
 
+# ── 楽譜の配置 (鍵盤を基準にした相対位置) ─────────────────────────────────
+# Score のシーン上の座標は絶対位置のプレースホルダに過ぎず、鍵盤のキャリブレー
+# ション結果とは無関係。鍵盤の復元が完了したタイミングで、鍵盤を基準にした
+# 相対オフセット（少し上・奥）に楽譜を配置し直す。
+func _position_score_relative_to_keyboard() -> void:
+	var kb    := $Keyboard as Node3D
+	var score := $Score as Node3D
+	var half_w : float = ORIG_WIDTH * 0.5 * kb.scale.x
+	var center : Vector3 = kb.global_position + kb.transform.basis.x * half_w
+	var offset : Vector3 = kb.transform.basis * Vector3(0, 0.35, -0.25)
+	score.global_position = center + offset
+	score.rotation.y = kb.rotation.y
+
+
 # ── AR ラベル ─────────────────────────────────────────────────────────────
 func _refresh_label(extra: String = "") -> void:
 	var kb  := $Keyboard as Node3D
 	var p   : Vector3 = kb.global_position
 	var rot : float   = rad_to_deg(kb.rotation.y)
 	var scl : float   = kb.scale.x
-	var txt := "[Calib]  Trig:移動  A/B:回転  StickY:拡縮  (自動保存)\n"
-	txt += "X:%.2f Y:%.2f Z:%.2f\n" % [p.x, p.y, p.z]
-	txt += "Rot:%.1f  Scale:%.2f" % [rot, scl]
+	var txt := "[鍵盤]  右コン  Trig:移動 A/B:回転 StickY:拡縮 (自動保存)\n"
+	txt += "X:%.2f Y:%.2f Z:%.2f  Rot:%.1f  Scale:%.2f\n" % [p.x, p.y, p.z, rot, scl]
+
+	# ── 楽譜の状態・キャリブレーション情報を表示 ──
+	var score := get_node_or_null("Score")
+	if score:
+		var s3 : Node3D  = score as Node3D
+		var sp : Vector3 = s3.global_position
+		var srot : float = rad_to_deg(s3.rotation.y)
+		var sscl : float = s3.scale.x
+		txt += "[楽譜]  左コン  Trig:移動 X/Y:回転 StickY:拡縮 (自動保存)\n"
+		txt += "X:%.2f Y:%.2f Z:%.2f  Rot:%.1f  Scale:%.2f\n" % [sp.x, sp.y, sp.z, srot, sscl]
+		txt += "[Score] %s" % str(score.get("debug_status"))
+
 	if extra != "":
 		txt += "\n" + extra
 	($XROrigin3D/ARLabel as Label3D).text = txt
@@ -186,12 +305,18 @@ func _on_session_supported(session_mode: String, supported: bool) -> void:
 func _on_session_started() -> void:
 	$CanvasLayer.visible = false
 	get_viewport().transparent_bg = true
-	($XROrigin3D/ARLabel as Label3D).visible = true
+	# ラベルの表示/非表示は前回のユーザー設定 (_label_visible) を引き継ぐ
+	($XROrigin3D/ARLabel as Label3D).visible = _label_visible
 	# 前セッションの残りフラグをリセット（誤った自動保存を防ぐ）
 	_was_moving       = false
 	_trigger_was_held = false
 	_a_held           = 0.0
 	_b_held           = 0.0
+	_score_x_held       = 0.0
+	_score_y_held       = 0.0
+	_score_was_moving   = false
+	_score_trigger_was_held = false
+	_label_toggle_held = 0.0
 	_restore_pos_frame = 2   # 2フレーム後にカメラ相対で保存位置を復元
 	_refresh_label()
 

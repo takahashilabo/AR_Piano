@@ -4,13 +4,20 @@
 # Web export artifacts (regenerate with `make export`)
 export/web/index.wasm
 export/web/index.pck
+export/web/index_v*.pck
 export/web/index.js
 export/web/index.audio.*.js
+export/web/index.icon.png
+export/web/index.apple-touch-icon.png
+export/web/index.png
 export/web/*.import
 
 # SSL certs (generate locally with mkcert)
 server/cert.pem
 server/key.pem
+
+# Local Claude Code session/tool config
+.claude/
 
 # macOS
 .DS_Store
